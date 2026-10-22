@@ -1,4 +1,4 @@
-```python
+
 import requests
 import pandas as pd
 import streamlit as st
@@ -893,4 +893,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-```
