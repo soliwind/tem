@@ -1,7 +1,9 @@
+
 import html
 import re
-from difflib import SequenceMatcher
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
+from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -9,95 +11,197 @@ import requests
 import streamlit as st
 
 
-# =========================================================
-# 1. 기본 설정
-# =========================================================
-
+# ============================================================
+# 1. 페이지 설정과 디자인
+# ============================================================
 st.set_page_config(
     page_title="어제의 박스오피스",
+    page_icon=None,
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-KOBIS_BOXOFFICE_URL = (
-    "https://www.kobis.or.kr/kobisopenapi/webservice/rest/"
-    "boxoffice/searchDailyBoxOfficeList.json"
+KOBIS_API_URL = (
+    "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/"
+    "searchDailyBoxOfficeList.json"
 )
 
-KOBIS_MOVIE_INFO_URL = (
-    "https://www.kobis.or.kr/kobisopenapi/webservice/rest/"
-    "movie/searchMovieInfo.json"
+# KOBIS 웹페이지가 제공하는 보조 데이터입니다.
+# 일일 오픈API에 없는 포스터/줄거리를 보완하는 용도이며,
+# 날짜와 영화 코드가 맞을 때에만 사용합니다.
+KOBIS_WEB_DAILY_URL = (
+    "https://www.kobis.or.kr/kobis/business/main/searchMainDailyBoxOffice.do"
 )
-
+KOBIS_SITE_URL = "https://www.kobis.or.kr"
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
-
-
-# =========================================================
-# 2. 페이지 디자인
-# =========================================================
 
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');
+    :root {
+        --ink: #14212B;
+        --gold: #B99752;
+        --paper: #F5F2EB;
+        --line: #DCD7CD;
+        --muted: #69737B;
+        --card: #FFFEFC;
+    }
 
     html, body, [class*="css"] {
-        font-family:
-            "Noto Sans KR",
-            "Pretendard",
-            "Apple SD Gothic Neo",
-            "Malgun Gothic",
-            sans-serif;
+        font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo",
+                     "Malgun Gothic", sans-serif;
     }
 
     .stApp {
-        background: #f5f6f8;
+        background: var(--paper);
+        color: var(--ink);
     }
 
     .block-container {
-        max-width: 1200px;
-        padding-top: 2.5rem;
-        padding-bottom: 4rem;
+        max-width: 1280px;
+        padding-top: 2.1rem;
+        padding-bottom: 3.5rem;
+    }
+
+    h1, h2, h3 {
+        color: var(--ink) !important;
+        letter-spacing: -0.045em !important;
     }
 
     h1 {
-        color: #191b20;
-        font-weight: 800 !important;
-        letter-spacing: -0.055em;
+        font-size: clamp(2rem, 4vw, 3rem) !important;
+        font-weight: 760 !important;
     }
 
-    h2, h3 {
-        color: #202329;
+    h2 {
+        font-size: 1.55rem !important;
+        font-weight: 720 !important;
+    }
+
+    h3 {
+        font-size: 1.13rem !important;
         font-weight: 700 !important;
-        letter-spacing: -0.035em;
     }
 
-    div[data-testid="stMetric"] {
-        background: #ffffff;
-        border: 1px solid #e5e7eb;
-        border-radius: 16px;
-        padding: 18px;
+    .masthead-kicker {
+        color: var(--gold);
+        font-size: .72rem;
+        font-weight: 750;
+        letter-spacing: .18em;
+        text-transform: uppercase;
+        margin-bottom: .5rem;
     }
 
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        background: #ffffff;
-        border-radius: 20px;
-        border-color: #e5e7eb;
+    .masthead-deck {
+        color: var(--muted);
+        font-size: .95rem;
+        margin-top: -.65rem;
+        margin-bottom: 1.35rem;
     }
 
-    div[data-testid="stImage"] img {
-        border-radius: 10px;
+    .section-eyebrow {
+        color: var(--gold);
+        font-size: .7rem;
+        font-weight: 750;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+        margin-bottom: .25rem;
     }
 
-    div[data-testid="stDataFrame"] {
-        border-radius: 12px;
-        overflow: hidden;
+    .rank-number {
+        font-size: .76rem;
+        font-weight: 750;
+        letter-spacing: .08em;
+        color: var(--gold);
+        margin-bottom: .3rem;
+    }
+
+    .movie-card-title {
+        color: var(--ink);
+        font-size: .98rem;
+        font-weight: 700;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+        margin: .25rem 0 .2rem 0;
+    }
+
+    .small-muted {
+        color: var(--muted);
+        font-size: .78rem;
+        line-height: 1.55;
+    }
+
+    .poster-placeholder {
+        box-sizing: border-box;
+        width: 100%;
+        aspect-ratio: 2 / 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #E9E5DC;
+        border: 1px solid var(--line);
+        color: #777D81;
+        font-size: .8rem;
+        text-align: center;
+        padding: .7rem;
+    }
+
+    .rule {
+        height: 1px;
+        background: var(--line);
+        margin: .6rem 0 1.1rem 0;
     }
 
     .source-note {
-        color: #858a93;
-        font-size: 0.82rem;
+        color: var(--muted);
+        font-size: .78rem;
         line-height: 1.7;
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        box-shadow: none;
+    }
+
+    div[data-testid="stMetric"] {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 14px 16px;
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: var(--muted);
+        font-size: .82rem;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: var(--ink);
+        font-weight: 720;
+        font-variant-numeric: tabular-nums;
+    }
+
+    div[data-testid="stImage"] img {
+        border-radius: 3px;
+    }
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid var(--line);
+        border-radius: 5px;
+    }
+
+    div[data-testid="stExpander"] {
+        border-color: var(--line);
+        border-radius: 5px;
+    }
+
+    .stButton button, .stDownloadButton button {
+        border-radius: 5px;
+        border-color: #C9C3B7;
+        font-weight: 650;
     }
     </style>
     """,
@@ -105,37 +209,27 @@ st.markdown(
 )
 
 
-# =========================================================
-# 3. 공통 함수
-# =========================================================
-
-def read_secret(name):
-    """Streamlit Secrets에서 설정값을 안전하게 읽습니다."""
+# ============================================================
+# 2. 공통 함수
+# ============================================================
+def read_secret(name: str) -> str:
+    """Streamlit Secrets에서 값을 읽습니다. 없으면 빈 문자열을 반환합니다."""
     try:
         return str(st.secrets[name]).strip()
     except Exception:
         return ""
 
 
-def clean_text(value):
-    """
-    HTML 태그와 HTML 특수문자를 정리합니다.
-
-    예:
-    <div>영화 제목</div> -> 영화 제목
-    &lt;div&gt;영화 제목&lt;/div&gt; -> 영화 제목
-    """
-
+def clean_text(value) -> str:
+    """HTML 태그와 엔티티를 제거하고 일반 텍스트로 정리합니다."""
     if value is None:
         return ""
 
     text = str(value)
 
-    # 이중으로 인코딩된 HTML도 처리할 수 있게 디코딩합니다.
     for _ in range(2):
         text = html.unescape(text)
 
-    # 줄바꿈 태그는 실제 줄바꿈으로 변경합니다.
     text = re.sub(
         r"<\s*br\s*/?\s*>",
         "\n",
@@ -143,242 +237,249 @@ def clean_text(value):
         flags=re.IGNORECASE,
     )
 
-    # 일반적인 HTML 태그를 제거합니다.
     text = re.sub(
         r"<\s*/?\s*[a-zA-Z][^>]*>",
         "",
         text,
+        flags=re.IGNORECASE,
     )
 
-    # 남은 HTML 특수문자를 일반 문자로 변환합니다.
     text = html.unescape(text)
-
-    # 연속된 빈 줄을 정리합니다.
     text = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", text)
 
     return text.strip()
 
 
-def to_int(value):
-    """API에서 문자열로 받은 숫자도 정수로 변환합니다."""
+def to_int(value) -> int:
+    """API 숫자 문자열을 안전하게 정수로 바꿉니다."""
     try:
         return int(str(value).replace(",", "").strip())
     except (ValueError, TypeError):
         return 0
 
 
-def format_number(value):
-    """숫자에 천 단위 쉼표를 붙입니다."""
+def format_number(value) -> str:
     return f"{to_int(value):,}"
 
 
-def format_date(value):
-    """YYYYMMDD 형식의 날짜를 YYYY.MM.DD 형식으로 표시합니다."""
+def format_date(value) -> str:
+    """YYYYMMDD, YYYY-MM-DD, YYYY.MM.DD를 YYYY.MM.DD로 표시합니다."""
     digits = re.sub(r"\D", "", str(value or ""))
 
-    if len(digits) == 8:
+    if len(digits) >= 8:
         return f"{digits[:4]}.{digits[4:6]}.{digits[6:8]}"
 
     return str(value or "정보 없음")
 
 
-def normalize_title(value):
-    """영화 제목 비교를 위해 공백과 문장부호를 제거합니다."""
+def get_kst_dates():
+    """한국 시간 기준 어제와 그 전날을 반환합니다."""
+    today_kst = datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+    return (
+        (today_kst - timedelta(days=1)).strftime("%Y%m%d"),
+        (today_kst - timedelta(days=2)).strftime("%Y%m%d"),
+    )
+
+
+def normalize_title(value) -> str:
     text = clean_text(value).lower()
     return re.sub(r"[\W_]", "", text, flags=re.UNICODE)
 
 
-def get_yesterday_kst():
-    """한국 시간 기준으로 어제 날짜를 YYYYMMDD 형식으로 반환합니다."""
-    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
-    yesterday = now_kst - timedelta(days=1)
+def get_rank_change(row) -> str:
+    change = to_int(row.get("rankInten", 0))
+    status = str(row.get("rankOldAndNew", "")).upper()
 
-    return yesterday.strftime("%Y%m%d")
+    if status == "NEW":
+        return "신규 진입"
+
+    if change > 0:
+        return f"▲ {change}"
+
+    if change < 0:
+        return f"▼ {abs(change)}"
+
+    return "변동 없음"
 
 
-# =========================================================
-# 4. KOBIS 일일 박스오피스 조회
-# =========================================================
-
+# ============================================================
+# 3. KOBIS 일일 박스오피스 오픈API
+# ============================================================
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_box_office(target_date, api_key):
-    """
-    KOBIS에서 일일 박스오피스 데이터를 불러옵니다.
-
-    포스터와 줄거리는 이 API의 응답에 있다고 가정하지 않습니다.
-    """
-
-    params = {
-        "key": api_key,
-        "targetDt": target_date,
-    }
-
+def fetch_boxoffice(target_date: str, api_key: str):
+    """KOBIS 일일 박스오피스를 조회합니다."""
     try:
         response = requests.get(
-            KOBIS_BOXOFFICE_URL,
-            params=params,
-            timeout=15,
-        )
-        response.raise_for_status()
-
-    except requests.exceptions.Timeout:
-        return None, "KOBIS API 응답 시간이 초과되었습니다."
-
-    except requests.exceptions.HTTPError:
-        return None, (
-            "KOBIS API에서 HTTP 오류가 발생했습니다. "
-            "API 상태와 요청 정보를 확인해 주세요."
-        )
-
-    except requests.exceptions.RequestException:
-        return None, (
-            "KOBIS API에 연결하지 못했습니다. "
-            "네트워크 또는 API 서버 상태를 확인해 주세요."
-        )
-
-    try:
-        data = response.json()
-    except ValueError:
-        return None, "KOBIS 응답을 JSON으로 읽을 수 없습니다."
-
-    # KOBIS는 일부 API 오류를 HTTP 200 응답 안에 담기도 합니다.
-    fault = data.get("faultInfo")
-
-    if fault:
-        message = clean_text(
-            fault.get("message", "알 수 없는 API 오류")
-        )
-        return None, f"KOBIS API 오류: {message}"
-
-    result = data.get("boxOfficeResult")
-
-    if not isinstance(result, dict):
-        return None, (
-            "박스오피스 결과가 응답에 없습니다. "
-            "API 요청 날짜와 키를 확인해 주세요."
-        )
-
-    movie_list = result.get("dailyBoxOfficeList", [])
-
-    if not movie_list:
-        return None, (
-            f"{format_date(target_date)} 날짜의 "
-            "박스오피스 데이터가 없습니다."
-        )
-
-    return movie_list, None
-
-
-# =========================================================
-# 5. KOBIS 영화 상세정보에서 영문 제목 보조 조회
-# =========================================================
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_kobis_english_title(movie_code, api_key):
-    """
-    영화 코드로 KOBIS 영화 상세정보를 조회합니다.
-
-    영문 제목을 TMDB 검색에 보조적으로 사용합니다.
-    실패해도 박스오피스 화면에는 영향을 주지 않습니다.
-    """
-
-    if not movie_code or not api_key:
-        return ""
-
-    try:
-        response = requests.get(
-            KOBIS_MOVIE_INFO_URL,
+            KOBIS_API_URL,
             params={
                 "key": api_key,
-                "movieCd": movie_code,
+                "targetDt": target_date,
+                "itemPerPage": 10,
             },
-            timeout=10,
+            timeout=15,
         )
-        response.raise_for_status()
 
+        response.raise_for_status()
         data = response.json()
 
-        if data.get("faultInfo"):
-            return ""
+    except requests.exceptions.Timeout:
+        return {
+            "data": [],
+            "error": "KOBIS API 응답 시간이 초과되었습니다.",
+        }
 
-        movie_info = (
-            data.get("movieInfoResult", {})
-            .get("movieInfo", {})
+    except requests.exceptions.HTTPError:
+        return {
+            "data": [],
+            "error": f"KOBIS API HTTP 오류: {response.status_code}",
+        }
+
+    except requests.exceptions.RequestException:
+        return {
+            "data": [],
+            "error": "KOBIS API에 연결하지 못했습니다.",
+        }
+
+    except ValueError:
+        return {
+            "data": [],
+            "error": "KOBIS 응답을 JSON으로 읽을 수 없습니다.",
+        }
+
+    fault = data.get("faultInfo") if isinstance(data, dict) else None
+
+    if fault:
+        return {
+            "data": [],
+            "error": "KOBIS API 오류: " + clean_text(
+                fault.get("message", "요청에 실패했습니다.")
+            ),
+        }
+
+    result = data.get("boxOfficeResult", {}) if isinstance(data, dict) else {}
+    rows = result.get("dailyBoxOfficeList", []) if isinstance(result, dict) else []
+
+    if not rows:
+        return {
+            "data": [],
+            "error": f"{format_date(target_date)} 박스오피스 데이터가 없습니다.",
+        }
+
+    return {"data": rows, "error": None}
+
+
+# ============================================================
+# 4. KOBIS 웹페이지의 포스터/한국어 줄거리 보조 데이터
+# ============================================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_kobis_web_metadata(target_date: str):
+    """
+    KOBIS 메인 일일 박스오피스 페이지가 반환하는 데이터를 읽습니다.
+
+    공개 OpenAPI 규격과는 별개의 웹페이지 데이터이므로,
+    응답 형식이나 날짜가 다르면 사용하지 않습니다.
+    """
+    try:
+        response = requests.get(
+            KOBIS_WEB_DAILY_URL,
+            timeout=12,
         )
 
-        return clean_text(movie_info.get("movieNmEn", ""))
+        response.raise_for_status()
+        data = response.json()
 
-    except (
-        requests.exceptions.RequestException,
-        ValueError,
-        TypeError,
-    ):
-        return ""
+    except (requests.exceptions.RequestException, ValueError):
+        return {}
+
+    # 응답 형식이 바뀔 경우를 대비합니다.
+    if isinstance(data, dict):
+        data = data.get("data", data.get("result", []))
+
+    if not isinstance(data, list):
+        return {}
+
+    metadata = {}
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        show_date = re.sub(
+            r"\D",
+            "",
+            str(item.get("showDt", "")),
+        )
+
+        # 요청한 날짜와 일치하는 데이터만 사용합니다.
+        if show_date != target_date:
+            continue
+
+        movie_code = str(item.get("movieCd", "")).strip()
+
+        if movie_code:
+            thumb_path = str(item.get("thumbUrl", "")).strip()
+
+            metadata[movie_code] = {
+                "poster_url": (
+                    urljoin(KOBIS_SITE_URL, thumb_path)
+                    if thumb_path
+                    else None
+                ),
+                "overview": clean_text(item.get("synop", "")),
+                "english_title": clean_text(item.get("movieNmEn", "")),
+            }
+
+    return metadata
 
 
-# =========================================================
-# 6. TMDB에서 포스터와 줄거리 검색
-# =========================================================
-
+# ============================================================
+# 5. TMDB 대체 조회
+#    KOBIS 보조 데이터가 없을 때만 사용합니다.
+# ============================================================
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_tmdb_movie_data(
-    korean_title,
-    english_title,
-    release_date,
-    tmdb_api_key,
+def fetch_tmdb_fallback(
+    korean_title: str,
+    english_title: str,
+    release_date: str,
+    api_key: str,
 ):
-    """
-    TMDB에서 영화 제목을 검색하고 포스터와 줄거리를 가져옵니다.
-
-    제목과 개봉연도를 함께 비교해 엉뚱한 영화가 선택될
-    가능성을 줄입니다.
-    """
-
-    empty_result = {
-        "poster_bytes": None,
+    """TMDB에서 포스터와 한국어 줄거리를 조회합니다."""
+    empty = {
         "poster_url": None,
         "overview": "",
-        "tmdb_url": None,
-        "message": None,
+        "error": None,
     }
 
-    if not tmdb_api_key:
-        return empty_result
+    if not api_key:
+        return empty
 
-    year = str(release_date or "")[:4]
+    year = re.sub(r"\D", "", str(release_date or ""))[:4]
 
-    # 한국어 제목을 먼저 검색하고, 영문 제목이 있으면
-    # 영어 검색도 추가로 실행합니다.
-    search_queries = []
+    queries = []
 
     if korean_title:
-        search_queries.append((korean_title, "ko-KR"))
+        queries.append(korean_title)
 
     if (
         english_title
-        and normalize_title(english_title)
-        != normalize_title(korean_title)
+        and normalize_title(english_title) != normalize_title(korean_title)
     ):
-        search_queries.append((english_title, "en-US"))
+        queries.append(english_title)
 
-    if not search_queries:
-        return {
-            **empty_result,
-            "message": "검색할 영화 제목이 없습니다.",
-        }
-
-    results_by_id = {}
+    candidates = {}
 
     try:
-        for query, language in search_queries:
+        for query in queries:
             params = {
-                "api_key": tmdb_api_key,
+                "api_key": api_key,
                 "query": query,
-                "language": language,
+                "language": "ko-KR",
+                "region": "KR",
                 "include_adult": "false",
             }
 
-            if year.isdigit() and len(year) == 4:
+            if len(year) == 4:
                 params["primary_release_year"] = year
 
             response = requests.get(
@@ -389,276 +490,249 @@ def get_tmdb_movie_data(
 
             if response.status_code == 401:
                 return {
-                    **empty_result,
-                    "message": (
-                        "TMDB API 키 인증에 실패했습니다. "
-                        "Secrets의 TMDB_API_KEY를 확인해 주세요."
-                    ),
+                    **empty,
+                    "error": "TMDB_API_KEY 인증에 실패했습니다.",
                 }
 
             response.raise_for_status()
-            search_data = response.json()
+            results = response.json().get("results", [])
 
-            results = search_data.get("results", [])
-
-            # 개봉연도 필터로 검색 결과가 없으면
-            # 연도 필터를 빼고 다시 검색합니다.
+            # 한국 개봉연도와 TMDB 등록 연도가 다른 경우,
+            # 연도 필터를 제거하고 다시 검색합니다.
             if not results and "primary_release_year" in params:
-                params.pop("primary_release_year")
+                params.pop("primary_release_year", None)
 
                 response = requests.get(
                     TMDB_SEARCH_URL,
                     params=params,
                     timeout=12,
                 )
+
                 response.raise_for_status()
                 results = response.json().get("results", [])
 
             for item in results:
-                item_id = item.get("id")
-
-                if item_id is not None:
-                    results_by_id[item_id] = item
+                if item.get("id") is not None:
+                    candidates[item["id"]] = item
 
     except requests.exceptions.RequestException:
         return {
-            **empty_result,
-            "message": "TMDB API에 연결하지 못했습니다.",
+            **empty,
+            "error": "TMDB에 연결하지 못했습니다.",
         }
 
     except ValueError:
         return {
-            **empty_result,
-            "message": "TMDB 응답을 JSON으로 읽지 못했습니다.",
+            **empty,
+            "error": "TMDB 응답을 읽을 수 없습니다.",
         }
-
-    candidates = list(results_by_id.values())
 
     if not candidates:
-        return {
-            **empty_result,
-            "message": "TMDB에서 일치하는 영화를 찾지 못했습니다.",
-        }
+        return empty
 
-    # 검색어와 영화 제목의 유사도를 계산합니다.
-    normalized_queries = [
+    query_norms = [
         normalize_title(query)
-        for query, _ in search_queries
+        for query in queries
         if normalize_title(query)
     ]
 
-    scored_candidates = []
+    scored = []
 
-    for item in candidates:
-        candidate_titles = [
+    for item in candidates.values():
+        titles = [
             normalize_title(item.get("title", "")),
             normalize_title(item.get("original_title", "")),
         ]
 
-        candidate_titles = [
-            value for value in candidate_titles if value
-        ]
-
+        titles = [title for title in titles if title]
         similarity = 0.0
-        exact_match = False
 
-        for query in normalized_queries:
-            for candidate_title in candidate_titles:
-                ratio = SequenceMatcher(
+        for query_norm in query_norms:
+            for candidate_title in titles:
+                score = SequenceMatcher(
                     None,
-                    query,
+                    query_norm,
                     candidate_title,
                 ).ratio()
 
-                if query == candidate_title:
-                    exact_match = True
-                    ratio = 1.0
+                if query_norm == candidate_title:
+                    score = 1.0
 
                 elif (
-                    len(query) >= 3
+                    len(query_norm) >= 3
                     and (
-                        query in candidate_title
-                        or candidate_title in query
+                        query_norm in candidate_title
+                        or candidate_title in query_norm
                     )
                 ):
-                    ratio = max(ratio, 0.85)
+                    score = max(score, 0.85)
 
-                similarity = max(similarity, ratio)
+                similarity = max(similarity, score)
 
-        candidate_year = str(
-            item.get("release_date", "")
-        )[:4]
+        candidate_year = str(item.get("release_date", ""))[:4]
 
-        # 제목이 잘 맞는 결과를 우선하고,
-        # 개봉연도가 같으면 추가 점수를 줍니다.
         score = similarity * 10
 
-        if exact_match:
-            score += 5
-
-        if (
-            year.isdigit()
-            and candidate_year == year
-        ):
+        if year and candidate_year == year:
             score += 2
 
         if item.get("poster_path"):
             score += 0.2
 
-        score += min(
-            to_int(item.get("vote_count", 0)),
-            1000,
-        ) / 100000
+        scored.append((score, similarity, item))
 
-        scored_candidates.append(
-            (score, similarity, item)
-        )
+    scored.sort(key=lambda item: item[0], reverse=True)
 
-    scored_candidates.sort(
-        key=lambda candidate: candidate[0],
-        reverse=True,
-    )
+    _, similarity, movie = scored[0]
+    candidate_year = str(movie.get("release_date", ""))[:4]
 
-    _, best_similarity, best_movie = scored_candidates[0]
-
-    # 이름이 너무 다르면 다른 영화의 포스터를 임의로
-    # 표시하지 않습니다.
-    same_year_single_result = (
+    same_year_single = (
         len(candidates) == 1
-        and year.isdigit()
-        and str(best_movie.get("release_date", ""))[:4] == year
+        and year
+        and candidate_year == year
     )
 
-    if (
-        best_similarity < 0.45
-        and not same_year_single_result
-    ):
-        return {
-            **empty_result,
-            "message": (
-                "영화 제목이 충분히 일치하는 검색 결과가 없습니다."
-            ),
-        }
+    # 제목이 충분히 일치하지 않으면 다른 영화의 포스터를 쓰지 않습니다.
+    if similarity < 0.45 and not same_year_single:
+        return empty
 
-    poster_path = best_movie.get("poster_path")
+    poster_path = movie.get("poster_path")
     poster_url = (
         f"{TMDB_IMAGE_BASE}{poster_path}"
         if poster_path
         else None
     )
 
-    overview = clean_text(best_movie.get("overview", ""))
+    overview = clean_text(movie.get("overview", ""))
+    movie_id = movie.get("id")
 
-    # 검색 결과에 줄거리가 없으면 영화 상세정보를 조회합니다.
-    movie_id = best_movie.get("id")
-
-    if not overview and movie_id:
+    # 검색 결과에 줄거리가 없으면 한국어 상세정보를 조회합니다.
+    if movie_id and not overview:
         try:
             detail_response = requests.get(
                 f"https://api.themoviedb.org/3/movie/{movie_id}",
                 params={
-                    "api_key": tmdb_api_key,
+                    "api_key": api_key,
                     "language": "ko-KR",
                 },
                 timeout=10,
             )
+
             detail_response.raise_for_status()
 
-            detail_data = detail_response.json()
             overview = clean_text(
-                detail_data.get("overview", "")
+                detail_response.json().get("overview", "")
             )
 
-        except (
-            requests.exceptions.RequestException,
-            ValueError,
-        ):
+        except (requests.exceptions.RequestException, ValueError):
+            overview = ""
+
+    # 상세정보에도 한국어 줄거리가 없으면 번역 목록을 확인합니다.
+    if movie_id and not overview:
+        try:
+            translations_response = requests.get(
+                f"https://api.themoviedb.org/3/movie/{movie_id}/translations",
+                params={"api_key": api_key},
+                timeout=10,
+            )
+
+            translations_response.raise_for_status()
+
+            translations = translations_response.json().get(
+                "translations",
+                [],
+            )
+
+            for translation in translations:
+                if (
+                    translation.get("iso_3166_1") == "KR"
+                    or translation.get("iso_639_1") == "ko"
+                ):
+                    translation_data = translation.get("data", {})
+
+                    overview = clean_text(
+                        translation_data.get("overview", "")
+                    )
+
+                    if overview:
+                        break
+
+        except (requests.exceptions.RequestException, ValueError):
             pass
 
-    # 포스터 파일을 서버에서 직접 내려받습니다.
-    # 이미지 주소를 브라우저에서 직접 읽는 데 실패하는
-    # 상황을 줄이기 위한 처리입니다.
-    poster_bytes = None
-
-    if poster_url:
-        try:
-            image_response = requests.get(
-                poster_url,
-                timeout=12,
-            )
-            image_response.raise_for_status()
-
-            content_type = image_response.headers.get(
-                "Content-Type",
-                "",
-            )
-
-            if (
-                content_type.lower().startswith("image/")
-                and image_response.content
-            ):
-                poster_bytes = image_response.content
-
-        except requests.exceptions.RequestException:
-            poster_bytes = None
-
-    tmdb_url = (
-        f"https://www.themoviedb.org/movie/{movie_id}"
-        if movie_id
-        else None
-    )
-
     return {
-        "poster_bytes": poster_bytes,
         "poster_url": poster_url,
         "overview": overview,
-        "tmdb_url": tmdb_url,
-        "message": None,
+        "error": None,
     }
 
 
-# =========================================================
-# 7. 포스터 출력
-# =========================================================
-
-def render_poster(movie_data, use_container_width=True):
-    """
-    내려받은 이미지 데이터를 먼저 사용하고,
-    필요하면 이미지 URL을 대체 수단으로 사용합니다.
-    """
-
-    poster = movie_data.get("poster_bytes")
-
-    if poster is None:
-        poster = movie_data.get("poster_url")
-
-    if not poster:
-        st.caption("등록된 포스터를 찾지 못했습니다.")
-        return
+@st.cache_data(ttl=86400, show_spinner=False)
+def download_image(image_url: str):
+    """이미지를 내려받아 bytes로 반환합니다. 실패 시 None을 반환합니다."""
+    if not image_url or not image_url.startswith("https://"):
+        return None
 
     try:
-        st.image(
-            poster,
-            use_container_width=use_container_width,
+        response = requests.get(
+            image_url,
+            timeout=12,
         )
-    except Exception:
-        st.caption("포스터 이미지를 표시하지 못했습니다.")
+
+        response.raise_for_status()
+
+        content_type = response.headers.get(
+            "Content-Type",
+            "",
+        ).lower()
+
+        if (
+            not content_type.startswith("image/")
+            or not response.content
+        ):
+            return None
+
+        return response.content
+
+    except requests.exceptions.RequestException:
+        return None
 
 
-# =========================================================
-# 8. API 키와 날짜 설정
-# =========================================================
-
+# ============================================================
+# 6. 조회 및 데이터 정리
+# ============================================================
 kobis_api_key = read_secret("KOBIS_KEY")
-tmdb_api_key = read_secret("TMDB_API_KEY")
+tmdb_api_key = read_secret("TMDB_API_KEY")  # 선택 사항
 
-yesterday = get_yesterday_kst()
+yesterday, day_before = get_kst_dates()
+yesterday_label = format_date(yesterday)
 
-st.title("어제의 박스오피스")
+header_left, header_right = st.columns([5, 1])
 
-st.caption(
-    f"{format_date(yesterday)} 기준 · "
-    "영화진흥위원회 KOBIS 일일 박스오피스"
+with header_left:
+    st.markdown(
+        '<div class="masthead-kicker">SCREEN REPORT / DAILY</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.title("어제의 박스오피스")
+
+    st.markdown(
+        f'<div class="masthead-deck">{yesterday_label} 기준 · 순위, 관객 수, 상영 현황</div>',
+        unsafe_allow_html=True,
+    )
+
+with header_right:
+    st.write("")
+    st.write("")
+
+    if st.button("새로고침", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+st.markdown(
+    '<div class="rule"></div>',
+    unsafe_allow_html=True,
 )
 
 if not kobis_api_key:
@@ -668,54 +742,81 @@ if not kobis_api_key:
     )
     st.stop()
 
-if not tmdb_api_key:
-    st.warning(
-        "포스터와 줄거리를 표시하려면 Streamlit Cloud의 Secrets에 "
-        "TMDB_API_KEY를 추가해야 합니다. "
-        "KOBIS_KEY는 관객 수와 순위 조회에 사용됩니다."
-    )
-
-
-# =========================================================
-# 9. 박스오피스 조회 및 데이터 정리
-# =========================================================
-
 with st.spinner("박스오피스 데이터를 불러오는 중입니다..."):
-    movie_list, error_message = get_box_office(
+    current_result = fetch_boxoffice(
         yesterday,
         kobis_api_key,
     )
 
-if error_message:
-    st.error(error_message)
+if current_result["error"]:
+    st.error(current_result["error"])
 
     with st.container(border=True):
-        st.subheader("확인할 사항")
+        st.markdown("**확인할 항목**")
         st.write(
-            "KOBIS_KEY가 올바른지, "
-            "Streamlit Cloud의 Secrets 설정에 오타가 없는지, "
-            "KOBIS API가 정상적으로 응답하는지 확인해 주세요."
+            "Secrets의 KOBIS_KEY, 날짜, API 응답 상태를 확인해 주세요."
         )
 
     st.stop()
 
-if not movie_list:
-    st.info("표시할 박스오피스 데이터가 없습니다.")
-    st.stop()
+current_raw = current_result["data"]
 
+# 전일 데이터는 비교 기능에만 사용합니다.
+# 전일 조회에 실패해도 현재 박스오피스는 계속 표시합니다.
+previous_result = fetch_boxoffice(
+    day_before,
+    kobis_api_key,
+)
+
+previous_raw = (
+    previous_result["data"]
+    if not previous_result["error"]
+    else []
+)
+
+previous_by_code = {
+    str(item.get("movieCd", "")): item
+    for item in previous_raw
+    if item.get("movieCd")
+}
 
 rows = []
 
-for movie in movie_list:
+for item in current_raw:
+    movie_code = str(item.get("movieCd", ""))
+    prior = previous_by_code.get(movie_code)
+
+    current_audience = to_int(item.get("audiCnt"))
+    prior_audience = to_int(prior.get("audiCnt")) if prior else None
+
+    if previous_result["error"]:
+        audience_change = "비교 불가"
+
+    elif prior is None:
+        audience_change = "전일 TOP 10 밖"
+
+    else:
+        delta = current_audience - prior_audience
+
+        if prior_audience > 0:
+            percent = (delta / prior_audience) * 100
+            audience_change = f"{delta:+,}명 ({percent:+.1f}%)"
+        else:
+            audience_change = f"{delta:+,}명"
+
     rows.append(
         {
-            "순위": to_int(movie.get("rank")),
-            "영화명": clean_text(movie.get("movieNm", "")),
-            "개봉일": str(movie.get("openDt", "") or ""),
-            "관객 수": to_int(movie.get("audiCnt")),
-            "누적 관객 수": to_int(movie.get("audiAcc")),
-            "스크린 수": to_int(movie.get("scrnCnt")),
-            "영화코드": str(movie.get("movieCd", "") or ""),
+            "순위": to_int(item.get("rank")),
+            "영화명": clean_text(item.get("movieNm", "")),
+            "개봉일": str(item.get("openDt", "") or ""),
+            "매출액": to_int(item.get("salesAmt")),
+            "관객 수": current_audience,
+            "누적 관객 수": to_int(item.get("audiAcc")),
+            "스크린 수": to_int(item.get("scrnCnt")),
+            "상영 횟수": to_int(item.get("showCnt")),
+            "영화코드": movie_code,
+            "순위 변동": get_rank_change(item),
+            "전일 대비 관객": audience_change,
         }
     )
 
@@ -728,199 +829,282 @@ if df.empty:
 df = df.sort_values("순위").reset_index(drop=True)
 
 
-# =========================================================
-# 10. 상위 5개 영화의 포스터 및 줄거리 조회
-# =========================================================
+# ============================================================
+# 7. 포스터/줄거리: KOBIS 우선, TMDB 보완
+# ============================================================
+with st.spinner("포스터와 한국어 줄거리를 확인하는 중입니다..."):
+    kobis_metadata = fetch_kobis_web_metadata(yesterday)
 
-movie_assets = {}
+    assets = {}
+    tmdb_error_messages = set()
 
-if tmdb_api_key:
-    with st.spinner("영화 포스터와 줄거리를 불러오는 중입니다..."):
-        for _, movie in df.head(5).iterrows():
-            movie_code = movie["영화코드"]
-            movie_title = movie["영화명"]
+    for _, row in df.iterrows():
+        code = row["영화코드"]
+        meta = kobis_metadata.get(code, {})
 
-            # 한국어 제목 검색이 잘 되지 않는 경우를 위해
-            # KOBIS 상세정보의 영문 제목도 보조로 사용합니다.
-            english_title = get_kobis_english_title(
-                movie_code,
-                kobis_api_key,
-            )
+        poster_url = meta.get("poster_url") or None
+        overview = clean_text(meta.get("overview", ""))
+        english_title = clean_text(meta.get("english_title", ""))
 
-            asset = get_tmdb_movie_data(
-                korean_title=movie_title,
+        # KOBIS 데이터에 포스터 또는 줄거리가 없을 때만 TMDB를 조회합니다.
+        if (not poster_url or not overview) and tmdb_api_key:
+            fallback = fetch_tmdb_fallback(
+                korean_title=row["영화명"],
                 english_title=english_title,
-                release_date=movie["개봉일"],
-                tmdb_api_key=tmdb_api_key,
+                release_date=row["개봉일"],
+                api_key=tmdb_api_key,
             )
 
-            movie_assets[movie_code] = asset
+            if not poster_url:
+                poster_url = fallback.get("poster_url")
 
-    # API 키가 틀렸을 때 원인을 화면에 안내합니다.
-    tmdb_messages = {
-        asset["message"]
-        for asset in movie_assets.values()
-        if asset.get("message")
-    }
+            if not overview:
+                overview = clean_text(fallback.get("overview", ""))
 
-    if any(
-        "API 키 인증" in message
-        for message in tmdb_messages
-    ):
-        st.error(
-            "TMDB_API_KEY 인증에 실패했습니다. "
-            "TMDB의 API v3 키가 올바르게 등록되어 있는지 확인해 주세요."
+            if fallback.get("error"):
+                tmdb_error_messages.add(fallback["error"])
+
+        poster_bytes = (
+            download_image(poster_url)
+            if poster_url
+            else None
+        )
+
+        assets[code] = {
+            "poster_url": poster_url,
+            "poster_bytes": poster_bytes,
+            "overview": overview,
+        }
+
+if tmdb_error_messages:
+    st.warning(
+        "TMDB 보완 조회 중 문제가 발생했습니다: "
+        + " / ".join(sorted(tmdb_error_messages))
+    )
+
+
+def show_poster(asset):
+    """내려받은 포스터를 표시하고, 없으면 자리표시자를 표시합니다."""
+    image_data = asset.get("poster_bytes")
+
+    if image_data:
+        st.image(
+            image_data,
+            use_container_width=True,
+        )
+    else:
+        st.markdown(
+            '<div class="poster-placeholder">포스터 이미지 없음</div>',
+            unsafe_allow_html=True,
         )
 
 
-# =========================================================
-# 11. 1위 영화
-# =========================================================
+# ============================================================
+# 8. 1위 영화 하이라이트
+# ============================================================
+top = df.iloc[0]
+top_asset = assets.get(top["영화코드"], {})
 
-top_movie = df.iloc[0]
-top_asset = movie_assets.get(
-    top_movie["영화코드"],
-    {},
+st.markdown(
+    '<div class="section-eyebrow">NUMBER ONE</div>',
+    unsafe_allow_html=True,
 )
 
 st.subheader("오늘의 1위")
 
-# 중요:
-# 여는 HTML 태그와 닫는 HTML 태그를 서로 다른 호출에
-# 나누지 않습니다. 포스터와 모든 텍스트가 같은
-# Streamlit 컨테이너 안에 있어야 카드가 깨지지 않습니다.
-with st.container(border=True, key="hero-card"):
-    poster_col, detail_col = st.columns(
-        [0.85, 2.15],
+# 여는 HTML과 닫는 HTML을 서로 다른 호출에 나누지 않습니다.
+# 포스터와 텍스트를 같은 Streamlit 컨테이너 안에 배치합니다.
+with st.container(border=True):
+    poster_col, information_col = st.columns(
+        [1, 2.25],
         gap="large",
     )
 
     with poster_col:
-        render_poster(top_asset)
+        show_poster(top_asset)
 
-    with detail_col:
-        st.subheader(top_movie["영화명"])
+    with information_col:
+        st.markdown(
+            f'<div class="rank-number">RANK {int(top["순위"]):02d}</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.header(top["영화명"])
 
         st.caption(
-            f"개봉일 {format_date(top_movie['개봉일'])}"
-            f"  ·  박스오피스 {int(top_movie['순위'])}위"
+            f"개봉일 {format_date(top['개봉일'])}"
+            f"  ·  순위 변동 {top['순위 변동']}"
         )
 
-        overview = clean_text(
-            top_asset.get("overview", "")
-        )
-
-        if overview:
-            # clean_text로 태그를 정리한 일반 텍스트를 출력합니다.
-            # unsafe_allow_html을 사용하지 않습니다.
-            st.write(overview)
+        if top_asset.get("overview"):
+            # 줄거리는 일반 텍스트로 출력합니다.
+            st.write(top_asset["overview"])
         else:
-            st.write(
-                "등록된 줄거리가 없습니다. "
-                "TMDB 검색 결과와 API 키를 확인해 주세요."
-            )
+            st.caption("한국어 줄거리가 등록되어 있지 않습니다.")
 
-        if top_asset.get("tmdb_url"):
-            st.markdown(
-                f"[TMDB에서 영화 정보 확인하기]({top_asset['tmdb_url']})"
-            )
+st.write("")
 
-
-# =========================================================
-# 12. 1위 영화 주요 지표
-# =========================================================
-
-st.subheader("주요 기록")
-
-metric1, metric2, metric3 = st.columns(3)
+metric1, metric2, metric3, metric4 = st.columns(4)
 
 with metric1:
     st.metric(
-        "일일 관객 수",
-        f"{format_number(top_movie['관객 수'])}명",
+        "일일 관객",
+        f"{format_number(top['관객 수'])}명",
     )
 
 with metric2:
     st.metric(
-        "누적 관객 수",
-        f"{format_number(top_movie['누적 관객 수'])}명",
+        "누적 관객",
+        f"{format_number(top['누적 관객 수'])}명",
     )
 
 with metric3:
     st.metric(
+        "매출액",
+        f"₩{format_number(top['매출액'])}",
+    )
+
+with metric4:
+    st.metric(
         "스크린 수",
-        f"{format_number(top_movie['스크린 수'])}개",
+        f"{format_number(top['스크린 수'])}개",
     )
 
 
-# =========================================================
-# 13. 상위 5개 영화 카드
-# =========================================================
-
-st.subheader("오늘의 영화 TOP 5")
-
-poster_columns = st.columns(5)
-
-for index, (_, movie) in enumerate(
-    df.head(5).iterrows()
-):
-    movie_asset = movie_assets.get(
-        movie["영화코드"],
-        {},
-    )
-
-    with poster_columns[index]:
-        with st.container(border=True):
-            render_poster(movie_asset)
-
-            # 제목은 HTML에 삽입하지 않고 일반 텍스트로 출력합니다.
-            st.write(movie["영화명"])
-
-            st.caption(
-                f"관객 {format_number(movie['관객 수'])}명"
-            )
-
-
-# =========================================================
-# 14. 관객 수 TOP 5 차트
-# =========================================================
-
-st.subheader("TOP 5 관객 수")
-
-chart_df = (
-    df.head(5)[["영화명", "관객 수"]]
-    .set_index("영화명")
+# ============================================================
+# 9. 전체 TOP 10 영화 카드와 검색
+# ============================================================
+st.markdown(
+    '<div class="section-eyebrow">THE DAILY TEN</div>',
+    unsafe_allow_html=True,
 )
 
-st.bar_chart(
-    chart_df,
+st.subheader("일일 박스오피스 전체 10편")
+
+st.caption(
+    "KOBIS 일일 박스오피스 API에서 제공하는 영화 목록을 모두 표시합니다."
+)
+
+search_query = st.text_input(
+    "영화명 검색",
+    placeholder="영화 제목을 입력하세요",
+    label_visibility="collapsed",
+)
+
+if search_query.strip():
+    filtered_df = df[
+        df["영화명"].str.contains(
+            search_query.strip(),
+            case=False,
+            na=False,
+        )
+    ].copy()
+else:
+    filtered_df = df.copy()
+
+if filtered_df.empty:
+    st.info("검색어와 일치하는 영화가 없습니다.")
+
+else:
+    # 한 줄에 다섯 편씩, 기본적으로 1~10위를 모두 보여줍니다.
+    for start in range(0, len(filtered_df), 5):
+        chunk = filtered_df.iloc[start:start + 5]
+        columns = st.columns(5, gap="medium")
+
+        for column, (_, movie) in zip(columns, chunk.iterrows()):
+            asset = assets.get(movie["영화코드"], {})
+
+            with column:
+                with st.container(border=True):
+                    show_poster(asset)
+
+                    st.markdown(
+                        f'<div class="rank-number">RANK {int(movie["순위"]):02d} · {html.escape(movie["순위 변동"])}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    st.markdown(
+                        f'<div class="movie-card-title">{html.escape(movie["영화명"])}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    st.markdown(
+                        f'<div class="small-muted">관객 {format_number(movie["관객 수"])}명</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    if asset.get("overview"):
+                        with st.expander("줄거리"):
+                            st.write(asset["overview"])
+                    else:
+                        st.caption("한국어 줄거리 없음")
+
+
+# ============================================================
+# 10. 차트: 관객 수 또는 매출액
+# ============================================================
+st.markdown(
+    '<div class="section-eyebrow">COMPARISON</div>',
+    unsafe_allow_html=True,
+)
+
+st.subheader("지표 비교")
+
+chart_choice = st.radio(
+    "비교 지표",
+    options=["관객 수", "매출액"],
     horizontal=True,
+    label_visibility="collapsed",
 )
 
+chart_df = filtered_df[["영화명", chart_choice]].copy()
 
-# =========================================================
-# 15. 전체 박스오피스 표
-# =========================================================
+if not chart_df.empty:
+    chart_df = (
+        chart_df.sort_values(chart_choice, ascending=True)
+        .set_index("영화명")
+    )
 
-st.subheader("전체 박스오피스")
+    st.bar_chart(
+        chart_df,
+        horizontal=True,
+        use_container_width=True,
+    )
 
-table_df = df[
-    [
-        "순위",
-        "영화명",
-        "개봉일",
-        "관객 수",
-        "누적 관객 수",
-        "스크린 수",
-    ]
-].copy()
+
+# ============================================================
+# 11. 전체 표와 CSV 다운로드
+# ============================================================
+st.markdown(
+    '<div class="section-eyebrow">DATA TABLE</div>',
+    unsafe_allow_html=True,
+)
+
+st.subheader("상세 기록")
+
+visible_columns = [
+    "순위",
+    "영화명",
+    "개봉일",
+    "순위 변동",
+    "관객 수",
+    "전일 대비 관객",
+    "매출액",
+    "누적 관객 수",
+    "스크린 수",
+    "상영 횟수",
+]
+
+table_df = filtered_df[visible_columns].copy()
 
 table_df["개봉일"] = table_df["개봉일"].map(format_date)
 
 for column in [
     "관객 수",
+    "매출액",
     "누적 관객 수",
     "스크린 수",
+    "상영 횟수",
 ]:
     table_df[column] = table_df[column].map(format_number)
 
@@ -930,21 +1114,39 @@ st.dataframe(
     hide_index=True,
 )
 
+csv_bytes = table_df.to_csv(index=False).encode("utf-8-sig")
 
-# =========================================================
-# 16. 데이터 출처 및 안내
-# =========================================================
+st.download_button(
+    label="현재 표를 CSV로 저장",
+    data=csv_bytes,
+    file_name=f"k obis_boxoffice_{yesterday}.csv".replace(" ", ""),
+    mime="text/csv",
+)
 
-st.divider()
+if previous_result["error"]:
+    st.caption(
+        "전일 자료를 조회하지 못해 관객 증감 비교 일부를 표시하지 못했습니다."
+    )
+
+st.markdown(
+    '<div class="rule"></div>',
+    unsafe_allow_html=True,
+)
 
 st.markdown(
     """
     <div class="source-note">
-        박스오피스 순위 및 관객 수: 영화진흥위원회 KOBIS 오픈API<br>
-        영화 포스터 및 줄거리: <a href="https://www.themoviedb.org/">
-        TMDB</a><br><br>
-        This product uses the TMDB API but is not endorsed or certified by TMDB.
+        박스오피스 순위·매출·관객 수: 영화진흥위원회 KOBIS 오픈API<br>
+        포스터·한국어 줄거리: KOBIS 웹페이지 제공 데이터 우선,
+        누락 시 TMDB API(키 등록 시) 보완<br>
+        전일 대비 관객 수는 전일 TOP 10에 포함된 영화만 직접 비교합니다.
+        전일 TOP 10 밖인 영화는 비교값을 단정하지 않습니다.
     </div>
     """,
     unsafe_allow_html=True,
 )
+
+if tmdb_api_key:
+    st.caption(
+        "This product uses the TMDB API but is not endorsed or certified by TMDB."
+    )
